@@ -1,9 +1,10 @@
 import Link from "next/link";
 import { Suspense } from "react";
 import { ChevronIcon, CheckIcon } from "@/components/icons";
+import { DatePicker } from "@/components/DatePicker";
 import { Diff, StateBadge } from "@/components/StateBadge";
-import { addDays, formatDayShort, formatYearMonth, isValidDate, kstStartIso, kstToday } from "@/lib/date";
-import { listMyPRs } from "@/lib/github";
+import { addDays, formatDay, formatDayShort, formatYearMonth, isValidDate, kstStartIso, kstToday, toKstDate } from "@/lib/date";
+import { latestPRBefore, listMyPRs } from "@/lib/github";
 import { countByDay, currentStreak } from "@/lib/retros";
 import { getSession, handleGitHubError } from "@/lib/session";
 
@@ -39,11 +40,14 @@ export default async function TodayPage(props: PageProps<"/">) {
             )}
           </div>
         </div>
-        {date !== today && (
-          <Link href="/" className="btn btn-ghost">
-            오늘로 이동
-          </Link>
-        )}
+        <div className="head-actions">
+          <DatePicker date={date} today={today} />
+          {date !== today && (
+            <Link href="/" className="btn btn-ghost">
+              오늘로 이동
+            </Link>
+          )}
+        </div>
       </div>
 
       <Suspense key={`${date}:${pendingFirst}`} fallback={<TodaySkeleton />}>
@@ -140,6 +144,9 @@ async function TodayContent({ date, today, pendingFirst }: { date: string; today
         <div className="card empty">
           <strong>{label} 올린 PR이 없어요</strong>
           PR을 올리면 여기에 자동으로 나타나요.
+          <Suspense fallback={null}>
+            <LatestPRLink token={token} login={profile.github_login} date={date} today={today} />
+          </Suspense>
         </div>
       ) : (
         <div className="pr-list">
@@ -180,6 +187,20 @@ async function TodayContent({ date, today, pendingFirst }: { date: string; today
         </div>
       )}
     </>
+  );
+}
+
+/** 빈 날이면 가장 최근에 PR을 올린 날로 바로 가는 버튼 */
+async function LatestPRLink({ token, login, date, today }: { token: string; login: string; date: string; today: string }) {
+  const at = await latestPRBefore(token, login, date);
+  if (!at) return null;
+  const d = toKstDate(at);
+  return (
+    <div>
+      <Link href={d === today ? "/" : `/?date=${d}`} className="btn btn-ghost">
+        최근 PR이 있는 날로 · {formatDay(d)}
+      </Link>
+    </div>
   );
 }
 

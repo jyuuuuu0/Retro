@@ -223,3 +223,11 @@ select.pill { appearance: none; padding-right: 34px; background-image: linear-gr
 .skeleton { background: linear-gradient(90deg, #151515 0%, #1d1d1d 50%, #151515 100%); background-size: 200% 100%; animation: shimmer 1.4s infinite; border-radius: 8px; }
 @keyframes shimmer { to { background-position: -200% 0; } }
 @media (prefers-reduced-motion: reduce) { .skeleton { animation: none; } }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.date-picker input {
+  height: 42px; padding: 0 14px; border-radius: 999px; border: 1px solid #4a4a4a;
+  background: transparent; color: var(--white); font: inherit; font-size: 14px; color-scheme: dark; cursor: pointer;
+}
+.date-picker input:hover { border-color: #777; }
+.head-actions { display: flex; gap: 10px; align-items: center; }
+.empty .btn { margin-top: 18px; }

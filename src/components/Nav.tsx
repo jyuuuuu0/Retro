@@ -7,13 +7,14 @@ import { signOut } from "@/app/actions";
 export function Nav({ login, avatarUrl }: { login: string | null; avatarUrl: string | null }) {
   const path = usePathname();
   const onRecords = path.startsWith("/records");
+  const onSettings = path.startsWith("/settings");
 
   return (
     <nav className="nav">
       <Link href="/" className="logo" aria-label="retro 홈">
         retro<span className="logo-dot" />
       </Link>
-      <Link href="/" className="nav-link" aria-current={!onRecords ? "page" : undefined}>
+      <Link href="/" className="nav-link" aria-current={!onRecords && !onSettings ? "page" : undefined}>
         오늘
       </Link>
       <Link href="/records" className="nav-link" aria-current={onRecords ? "page" : undefined}>
@@ -33,12 +34,14 @@ export function Nav({ login, avatarUrl }: { login: string | null; avatarUrl: str
             </form>
           </>
         )}
-        {avatarUrl ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img src={avatarUrl} alt="" className="avatar" />
-        ) : (
-          <span className="avatar" />
-        )}
+        <Link href="/settings" aria-label="설정" aria-current={onSettings ? "page" : undefined} className="avatar-link">
+          {avatarUrl ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={avatarUrl} alt="" className="avatar" />
+          ) : (
+            <span className="avatar" />
+          )}
+        </Link>
       </div>
     </nav>
   );

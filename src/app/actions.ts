@@ -88,3 +88,21 @@ export async function signOut() {
   await supabase.auth.signOut();
   redirect("/login");
 }
+
+export type DeleteResult = { ok: false; error: string } | undefined;
+
+/** 회원 탈퇴: 계정·프로필(GitHub 토큰)·회고를 모두 지운다. */
+export async function deleteAccount(_prev: DeleteResult, formData: FormData): Promise<DeleteResult> {
+  if (formData.get("confirm") !== "탈퇴") return { ok: false, error: "'탈퇴'를 정확히 입력해 주세요" };
+
+  const supabase = await createClient();
+  const { data: auth } = await supabase.auth.getClaims();
+  if (!auth?.claims?.sub) redirect("/login");
+
+  const { error } = await supabase.rpc("delete_my_account");
+  if (error) return { ok: false, error: "탈퇴에 실패했어요. 잠시 후 다시 시도해 주세요." };
+
+  // 계정이 이미 없으므로 서버 호출 없이 이 브라우저의 세션 쿠키만 지운다
+  await supabase.auth.signOut({ scope: "local" });
+  redirect("/login?bye=1");
+}

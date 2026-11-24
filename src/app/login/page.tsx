@@ -7,7 +7,8 @@ const ERRORS: Record<string, string> = {
 };
 
 async function ErrorMessage({ searchParams }: { searchParams: PageProps<"/login">["searchParams"] }) {
-  const { error } = await searchParams;
+  const { error, bye } = await searchParams;
+  if (bye) return <p className="muted">탈퇴가 완료됐어요. 계정과 회고, GitHub 토큰이 모두 삭제됐어요.</p>;
   const message = typeof error === "string" ? ERRORS[error] : undefined;
   return message ? <p className="error-text">{message}</p> : null;
 }

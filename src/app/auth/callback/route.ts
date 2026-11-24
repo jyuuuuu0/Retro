@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { encryptToken } from "@/lib/crypto";
 import { createClient } from "@/lib/supabase/server";
 
 export async function GET(request: Request) {
@@ -19,7 +20,7 @@ export async function GET(request: Request) {
         id: data.user.id,
         github_login: login,
         avatar_url: meta.avatar_url ?? null,
-        ...(token ? { github_token: token } : {}),
+        ...(token ? { github_token: encryptToken(token, data.user.id) } : {}),
       });
 
       if (!upsertError) return NextResponse.redirect(`${origin}/`);

@@ -231,3 +231,21 @@ select.pill { appearance: none; padding-right: 34px; background-image: linear-gr
 .date-picker input:hover { border-color: #777; }
 .head-actions { display: flex; gap: 10px; align-items: center; }
 .empty .btn { margin-top: 18px; }
+/* settings */
+.avatar-link { display: inline-flex; border-radius: 50%; }
+.avatar-link[aria-current="page"] .avatar { box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.25); }
+.settings { display: flex; flex-direction: column; gap: 16px; max-width: 720px; }
+.setting-card { padding: 26px 28px; }
+.setting-card h2 { margin: 0 0 14px; font-size: 18px; font-weight: 700; color: var(--white); }
+.setting-card p { line-height: 1.65; margin: 0 0 16px; font-size: 14px; }
+.setting-row { display: flex; justify-content: space-between; gap: 16px; padding: 12px 0; border-top: 1px solid var(--border); font-size: 14px; }
+.setting-row:first-of-type { border-top: 0; }
+.setting-card.danger { border-color: #3a1f1f; }
+.delete-form { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
+.delete-row { display: flex; gap: 10px; }
+.delete-row .input { max-width: 220px; }
+.btn-danger { background: var(--red); border-color: var(--red); color: #fff; }
+.btn-danger:hover { background: #e5443c; }
+.small { font-size: 12px !important; }
+.underline { text-decoration: underline; text-underline-offset: 3px; }
+.underline:hover { color: var(--white); }

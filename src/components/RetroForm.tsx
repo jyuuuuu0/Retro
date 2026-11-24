@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useRef, useState, useTransition, type KeyboardEvent, type ReactNode } from "react";
 import { saveRetro, type RetroInput } from "@/app/actions";
 
@@ -28,7 +27,7 @@ export function RetroForm({
   side,
   pr,
   prUrl,
-  nextHref,
+  nextSlot,
   initial,
   savedAt: initialSavedAt,
 }: {
@@ -36,7 +35,7 @@ export function RetroForm({
   side: ReactNode;
   pr: RetroInput["pr"];
   prUrl: string;
-  nextHref: string | null;
+  nextSlot: ReactNode;
   initial: Fields;
   savedAt: string | null;
 }) {
@@ -110,15 +109,7 @@ export function RetroForm({
           <a href={prUrl} target="_blank" rel="noreferrer" className="btn btn-ghost">
             GitHub에서 보기
           </a>
-          {nextHref ? (
-            <Link href={nextHref} className="btn">
-              다음 PR →
-            </Link>
-          ) : (
-            <Link href="/" className="btn">
-              완료
-            </Link>
-          )}
+          {nextSlot}
         </div>
       </div>
 

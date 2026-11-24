@@ -1,5 +1,6 @@
 import "server-only";
-import type { Octokit } from "@octokit/rest";
+import { Octokit } from "@octokit/rest";
+import { cacheLife, cacheTag } from "next/cache";
 import { kstDayRange } from "./date";
 
 export type PRState = "open" | "merged" | "closed";
@@ -21,118 +22,192 @@ export type PRSummary = {
   reviews: number;
 };
 
-type PullData = Awaited<ReturnType<Octokit["rest"]["pulls"]["get"]>>["data"];
-
-function stateOf(pr: Pick<PullData, "state" | "merged_at">): PRState {
-  if (pr.merged_at) return "merged";
-  return pr.state === "open" ? "open" : "closed";
-}
-
-function toSummary(pr: PullData, owner: string, repo: string): PRSummary {
-  return {
-    nodeId: pr.node_id,
-    owner,
-    repo,
-    repoFullName: `${owner}/${repo}`,
-    number: pr.number,
-    title: pr.title,
-    url: pr.html_url,
-    state: stateOf(pr),
-    createdAt: pr.created_at,
-    additions: pr.additions,
-    deletions: pr.deletions,
-    changedFiles: pr.changed_files,
-    commits: pr.commits,
-    reviews: pr.review_comments + pr.comments,
-  };
-}
-
-/** 그날(KST) 내가 만든 PR 목록. 최신순. */
-export async function listMyPRs(octokit: Octokit, login: string, date: string): Promise<PRSummary[]> {
-  const q = `is:pr author:${login} created:${kstDayRange(date)}`;
-  const { data } = await octokit.rest.search.issuesAndPullRequests({
-    q,
-    per_page: 50,
-    sort: "created",
-    order: "desc",
-  });
-
-  const refs = data.items.map((item) => {
-    // repository_url: https://api.github.com/repos/{owner}/{repo}
-    const [owner, repo] = item.repository_url.split("/repos/")[1].split("/");
-    return { owner, repo, number: item.number };
-  });
-
-  const pulls = await Promise.all(
-    refs.map(async ({ owner, repo, number }) => {
-      try {
-        const { data: pr } = await octokit.rest.pulls.get({ owner, repo, pull_number: number });
-        return toSummary(pr, owner, repo);
-      } catch {
-        return null; // 접근 권한이 없어진 레포 등은 건너뛴다
-      }
-    }),
-  );
-  return pulls.filter((p): p is PRSummary => p !== null);
-}
-
 export type PRDetail = PRSummary & {
   body: string;
   commitList: { sha: string; message: string }[];
   files: { filename: string; additions: number; deletions: number }[];
-  reviewList: { id: number; author: string; body: string; path?: string; url: string }[];
+  reviewList: { id: string; author: string; body: string; path?: string; url: string }[];
 };
 
+/** 캐시 함수는 throw 대신 결과로 에러 상태를 돌려준다 (401이면 다시 로그인) */
+export type GHResult<T> = { ok: true; data: T } | { ok: false; status: number };
+
+function client(token: string) {
+  return new Octokit({ auth: token, userAgent: "retro-app" });
+}
+
+function statusOf(e: unknown): number {
+  if (typeof e === "object" && e !== null && "status" in e) return Number((e as { status: number }).status);
+  return 500;
+}
+
+type PRNode = {
+  id: string;
+  number: number;
+  title: string;
+  url: string;
+  state: "OPEN" | "CLOSED" | "MERGED";
+  createdAt: string;
+  additions: number;
+  deletions: number;
+  changedFiles: number;
+  commits: { totalCount: number };
+  comments: { totalCount: number };
+  reviews: { totalCount: number };
+  repository: { name: string; nameWithOwner: string; owner: { login: string } };
+};
+
+const PR_FIELDS = `
+  id number title url state createdAt additions deletions changedFiles
+  commits { totalCount }
+  comments { totalCount }
+  reviews { totalCount }
+  repository { name nameWithOwner owner { login } }
+`;
+
+function toSummary(n: PRNode): PRSummary {
+  return {
+    nodeId: n.id,
+    owner: n.repository.owner.login,
+    repo: n.repository.name,
+    repoFullName: n.repository.nameWithOwner,
+    number: n.number,
+    title: n.title,
+    url: n.url,
+    state: n.state.toLowerCase() as PRState,
+    createdAt: n.createdAt,
+    additions: n.additions,
+    deletions: n.deletions,
+    changedFiles: n.changedFiles,
+    commits: n.commits.totalCount,
+    reviews: n.comments.totalCount + n.reviews.totalCount,
+  };
+}
+
+/**
+ * 그날(KST) 내가 만든 PR 목록. GraphQL 한 번으로 가져오고 서버에 잠깐 캐시한다.
+ * 오늘은 1분, 지난 날짜는 10분마다 새로 확인한다.
+ */
+export async function listMyPRs(
+  token: string,
+  login: string,
+  date: string,
+  isToday: boolean,
+): Promise<GHResult<PRSummary[]>> {
+  "use cache";
+  if (isToday) cacheLife({ stale: 30, revalidate: 60, expire: 600 });
+  else cacheLife({ stale: 300, revalidate: 600, expire: 3600 });
+  cacheTag(`prs:${login}:${date}`);
+
+  try {
+    const q = `is:pr author:${login} created:${kstDayRange(date)} sort:created-desc`;
+    const res = await client(token).graphql<{ search: { nodes: (PRNode | Record<string, never>)[] } }>(
+      `query($q: String!) {
+        search(query: $q, type: ISSUE, first: 50) {
+          nodes { ... on PullRequest { ${PR_FIELDS} } }
+        }
+      }`,
+      { q },
+    );
+    const prs = res.search.nodes.filter((n): n is PRNode => "id" in n).map(toSummary);
+    return { ok: true, data: prs };
+  } catch (e) {
+    return { ok: false, status: statusOf(e) };
+  }
+}
+
+type Author = { login: string } | null;
+type DetailNode = PRNode & {
+  body: string;
+  commitList: { nodes: { commit: { oid: string; messageHeadline: string } }[] };
+  files: { nodes: { path: string; additions: number; deletions: number }[] } | null;
+  reviewList: {
+    nodes: {
+      id: string;
+      author: Author;
+      body: string;
+      url: string;
+      submittedAt: string | null;
+      comments: { nodes: { id: string; author: Author; body: string; path: string; url: string; createdAt: string }[] };
+    }[];
+  };
+  issueComments: { nodes: { id: string; author: Author; body: string; url: string; createdAt: string }[] };
+};
+
+/** PR 상세 (커밋·파일·리뷰·코멘트)를 GraphQL 한 번으로. 2분 캐시. */
 export async function getPRDetail(
-  octokit: Octokit,
+  token: string,
   owner: string,
   repo: string,
   number: number,
-): Promise<PRDetail> {
-  const base = { owner, repo, pull_number: number };
-  const [pr, commits, files, reviews, comments] = await Promise.all([
-    octokit.rest.pulls.get(base),
-    octokit.rest.pulls.listCommits({ ...base, per_page: 100 }),
-    octokit.rest.pulls.listFiles({ ...base, per_page: 100 }),
-    octokit.rest.pulls.listReviews({ ...base, per_page: 100 }),
-    octokit.rest.pulls.listReviewComments({ ...base, per_page: 100 }),
-  ]);
+): Promise<GHResult<PRDetail | null>> {
+  "use cache";
+  cacheLife({ stale: 60, revalidate: 120, expire: 1800 });
+  cacheTag(`pr:${owner}/${repo}#${number}`);
 
-  const reviewList = [
-    ...reviews.data
-      .filter((r) => r.body?.trim())
-      .map((r) => ({
-        id: r.id,
-        author: r.user?.login ?? "unknown",
-        body: r.body,
-        url: r.html_url,
-        at: r.submitted_at ?? "",
+  try {
+    const res = await client(token).graphql<{ repository: { pullRequest: DetailNode | null } | null }>(
+      `query($owner: String!, $repo: String!, $number: Int!) {
+        repository(owner: $owner, name: $repo) {
+          pullRequest(number: $number) {
+            ${PR_FIELDS}
+            body
+            commitList: commits(first: 100) { nodes { commit { oid messageHeadline } } }
+            files(first: 100) { nodes { path additions deletions } }
+            reviewList: reviews(first: 50) {
+              nodes {
+                id author { login } body url submittedAt
+                comments(first: 30) { nodes { id author { login } body path url createdAt } }
+              }
+            }
+            issueComments: comments(first: 50) { nodes { id author { login } body url createdAt } }
+          }
+        }
+      }`,
+      { owner, repo, number },
+    );
+
+    const pr = res.repository?.pullRequest;
+    if (!pr) return { ok: true, data: null };
+
+    const reviewList = [
+      ...pr.reviewList.nodes.flatMap((r) => [
+        ...(r.body.trim()
+          ? [{ id: r.id, author: r.author?.login ?? "unknown", body: r.body, path: undefined as string | undefined, url: r.url, at: r.submittedAt ?? "" }]
+          : []),
+        ...r.comments.nodes.map((c) => ({
+          id: c.id,
+          author: c.author?.login ?? "unknown",
+          body: c.body,
+          path: c.path as string | undefined,
+          url: c.url,
+          at: c.createdAt,
+        })),
+      ]),
+      ...pr.issueComments.nodes.map((c) => ({
+        id: c.id,
+        author: c.author?.login ?? "unknown",
+        body: c.body,
+        path: undefined as string | undefined,
+        url: c.url,
+        at: c.createdAt,
       })),
-    ...comments.data.map((c) => ({
-      id: c.id,
-      author: c.user?.login ?? "unknown",
-      body: c.body,
-      path: c.path,
-      url: c.html_url,
-      at: c.created_at,
-    })),
-  ]
-    .sort((a, b) => a.at.localeCompare(b.at))
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    .map(({ at, ...rest }) => rest);
+    ]
+      .sort((a, b) => a.at.localeCompare(b.at))
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      .map(({ at, ...rest }) => rest);
 
-  return {
-    ...toSummary(pr.data, owner, repo),
-    body: pr.data.body ?? "",
-    commitList: commits.data.map((c) => ({
-      sha: c.sha,
-      message: c.commit.message.split("\n")[0],
-    })),
-    files: files.data.map((f) => ({
-      filename: f.filename,
-      additions: f.additions,
-      deletions: f.deletions,
-    })),
-    reviewList,
-  };
+    return {
+      ok: true,
+      data: {
+        ...toSummary(pr),
+        body: pr.body ?? "",
+        commitList: pr.commitList.nodes.map((c) => ({ sha: c.commit.oid, message: c.commit.messageHeadline })),
+        files: (pr.files?.nodes ?? []).map((f) => ({ filename: f.path, additions: f.additions, deletions: f.deletions })),
+        reviewList,
+      },
+    };
+  } catch (e) {
+    return { ok: false, status: statusOf(e) };
+  }
 }

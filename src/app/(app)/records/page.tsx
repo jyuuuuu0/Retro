@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { Suspense } from "react";
 import { Heatmap, HeatLegend } from "@/components/Heatmap";
 import { SearchIcon } from "@/components/icons";
 import { addDays, formatDay, kstStartIso, kstToday, toKstDate } from "@/lib/date";
@@ -18,20 +19,45 @@ function str(v: string | string[] | undefined) {
 
 export default async function RecordsPage(props: PageProps<"/records">) {
   const sp = await props.searchParams;
+  const key = JSON.stringify(sp);
+  return (
+    <>
+      <h1 className="page-title" style={{ marginBottom: 28 }}>
+        기록
+      </h1>
+      <Suspense key={key} fallback={<RecordsSkeleton />}>
+        <RecordsContent sp={sp} />
+      </Suspense>
+    </>
+  );
+}
+
+function RecordsSkeleton() {
+  return (
+    <div aria-busy="true" aria-label="불러오는 중">
+      <div className="skeleton" style={{ height: 240, borderRadius: 16, marginBottom: 24 }} />
+      <div className="skeleton" style={{ height: 42, borderRadius: 999, marginBottom: 32 }} />
+      <div className="skeleton" style={{ height: 110, borderRadius: 16, marginBottom: 10 }} />
+      <div className="skeleton" style={{ height: 110, borderRadius: 16 }} />
+    </div>
+  );
+}
+
+async function RecordsContent({ sp }: { sp: Record<string, string | string[] | undefined> }) {
   const q = str(sp.q).slice(0, 100);
   const repo = str(sp.repo);
   const tag = str(sp.tag);
   const rating = Number(str(sp.rating)) || 0;
   const period = PERIODS[str(sp.period)] ? str(sp.period) : "all";
 
-  const { supabase, user } = await getSession();
+  const { supabase, userId } = await getSession();
   const today = kstToday();
 
   // 잔디 + 필터 옵션용 (최근 1년치 가볍게)
   const { data: meta } = await supabase
     .from("retros")
     .select("pr_created_at, repo_full_name, tags")
-    .eq("user_id", user.id)
+    .eq("user_id", userId)
     .gte("pr_created_at", kstStartIso(addDays(today, -380)));
 
   const counts = countByDay(meta ?? []);
@@ -43,7 +69,7 @@ export default async function RecordsPage(props: PageProps<"/records">) {
   let query = supabase
     .from("retros")
     .select("*")
-    .eq("user_id", user.id)
+    .eq("user_id", userId)
     .order("pr_created_at", { ascending: false })
     .limit(100);
   const days = PERIODS[period].days;
@@ -68,10 +94,6 @@ export default async function RecordsPage(props: PageProps<"/records">) {
 
   return (
     <>
-      <h1 className="page-title" style={{ marginBottom: 28 }}>
-        기록
-      </h1>
-
       <section className="card heat" aria-label="회고 잔디">
         <div className="heat-head">
           <b>지난 1년 동안 회고 {yearTotal}개</b>

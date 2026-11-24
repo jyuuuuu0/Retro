@@ -1,63 +1,54 @@
 import Link from "next/link";
-import { notFound, redirect } from "next/navigation";
+import { notFound } from "next/navigation";
+import { Suspense } from "react";
 import { RetroForm } from "@/components/RetroForm";
 import { Diff, StateBadge } from "@/components/StateBadge";
-import { formatDay, toKstDate } from "@/lib/date";
-import { getPRDetail, listMyPRs, type PRDetail } from "@/lib/github";
+import { formatDay, kstToday, toKstDate } from "@/lib/date";
+import { getPRDetail, listMyPRs } from "@/lib/github";
 import type { Retro } from "@/lib/retros";
-import { getSession, isAuthError } from "@/lib/session";
+import { getSession, handleGitHubError } from "@/lib/session";
 
 export default async function WritePage(props: PageProps<"/pr/[owner]/[repo]/[number]">) {
   const { owner, repo, number: numStr } = await props.params;
   const number = Number(numStr);
   if (!Number.isInteger(number) || number <= 0) notFound();
 
-  const { supabase, user, profile, octokit } = await getSession();
+  return (
+    <Suspense key={`${owner}/${repo}#${number}`} fallback={<WriteSkeleton />}>
+      <WriteContent owner={owner} repo={repo} number={number} />
+    </Suspense>
+  );
+}
 
-  let pr: PRDetail;
-  try {
-    pr = await getPRDetail(octokit, owner, repo, number);
-  } catch (e) {
-    if (isAuthError(e)) redirect("/login?error=token");
-    notFound();
-  }
+async function WriteContent({ owner, repo, number }: { owner: string; repo: string; number: number }) {
+  const { supabase, userId, token } = await getSession();
 
-  const date = toKstDate(pr.createdAt);
-
-  // 같은 날 PR 중 아직 안 쓴 다음 PR 찾기
-  const sameDay = await listMyPRs(octokit, profile.github_login, date).catch(() => []);
-  const ids = sameDay.map((p) => p.nodeId);
-  const [{ data: retro }, { data: writtenRows }] = await Promise.all([
+  // PR 상세와 저장된 회고를 동시에
+  const [detail, { data: retro }] = await Promise.all([
+    getPRDetail(token, owner, repo, number),
     supabase
       .from("retros")
       .select("*")
-      .eq("user_id", user.id)
-      .eq("pr_node_id", pr.nodeId)
+      .eq("user_id", userId)
+      .eq("repo_full_name", `${owner}/${repo}`)
+      .eq("pr_number", number)
       .maybeSingle<Retro>(),
-    ids.length
-      ? supabase.from("retros").select("pr_node_id").eq("user_id", user.id).in("pr_node_id", ids)
-      : Promise.resolve({ data: [] as { pr_node_id: string }[] }),
   ]);
-  const written = new Set((writtenRows ?? []).map((r) => r.pr_node_id));
-  const pending = sameDay.filter((p) => !written.has(p.nodeId) && p.nodeId !== pr.nodeId);
-  const idx = sameDay.findIndex((p) => p.nodeId === pr.nodeId);
-  const nextPending =
-    sameDay.slice(idx + 1).find((p) => !written.has(p.nodeId)) ?? pending[0] ?? null;
 
-  const backHref = date === toKstDate(new Date()) ? "/" : `/?date=${date}`;
-  const nextHref = nextPending
-    ? `/pr/${nextPending.owner}/${nextPending.repo}/${nextPending.number}`
-    : null;
+  if (!detail.ok) {
+    handleGitHubError(detail.status);
+    notFound();
+  }
+  const pr = detail.data;
+  if (!pr) notFound();
+
+  const date = toKstDate(pr.createdAt);
+  const backHref = date === kstToday() ? "/" : `/?date=${date}`;
 
   const header = (
     <div>
       <div className="crumb">
         <Link href={backHref}>← {formatDay(date)}</Link>
-        {sameDay.length > 0 && (
-          <span>
-            | 남은 PR {pending.length}개
-          </span>
-        )}
       </div>
       <h1 className="write-title">{pr.title}</h1>
       <div className="write-meta">
@@ -80,7 +71,7 @@ export default async function WritePage(props: PageProps<"/pr/[owner]/[repo]/[nu
         </div>
       )}
       <div className="blk">
-        <h3>커밋 {pr.commitList.length}</h3>
+        <h3>커밋 {pr.commits}</h3>
         {pr.commitList.map((c) => (
           <div className="row" key={c.sha}>
             <span title={c.message}>{c.message}</span>
@@ -98,8 +89,8 @@ export default async function WritePage(props: PageProps<"/pr/[owner]/[repo]/[nu
             </span>
           </div>
         ))}
-        {pr.files.length > shownFiles.length && (
-          <div className="row muted">외 {pr.files.length - shownFiles.length}개</div>
+        {pr.changedFiles > shownFiles.length && (
+          <div className="row muted">외 {pr.changedFiles - shownFiles.length}개</div>
         )}
       </div>
       <div className="blk">
@@ -117,13 +108,26 @@ export default async function WritePage(props: PageProps<"/pr/[owner]/[repo]/[nu
     </aside>
   );
 
+  // '다음 PR' 버튼은 따로 늦게 채워서 본문이 먼저 뜨게 한다
+  const nextSlot = (
+    <Suspense
+      fallback={
+        <Link href={backHref} className="btn">
+          완료
+        </Link>
+      }
+    >
+      <NextPRButton date={date} currentNodeId={pr.nodeId} backHref={backHref} />
+    </Suspense>
+  );
+
   return (
     <RetroForm
       key={pr.nodeId}
       header={header}
       side={side}
+      nextSlot={nextSlot}
       prUrl={pr.url}
-      nextHref={nextHref}
       pr={{
         nodeId: pr.nodeId,
         repoFullName: pr.repoFullName,
@@ -145,5 +149,57 @@ export default async function WritePage(props: PageProps<"/pr/[owner]/[repo]/[nu
       }}
       savedAt={retro?.updated_at ?? null}
     />
+  );
+}
+
+/** 같은 날 PR 중 아직 회고를 안 쓴 다음 PR로 가는 버튼 */
+async function NextPRButton({ date, currentNodeId, backHref }: { date: string; currentNodeId: string; backHref: string }) {
+  const { supabase, userId, profile, token } = await getSession();
+  const res = await listMyPRs(token, profile.github_login, date, date === kstToday());
+  const sameDay = res.ok ? res.data : [];
+  if (sameDay.length === 0) {
+    return (
+      <Link href={backHref} className="btn">
+        완료
+      </Link>
+    );
+  }
+
+  const { data } = await supabase
+    .from("retros")
+    .select("pr_node_id")
+    .eq("user_id", userId)
+    .in("pr_node_id", sameDay.map((p) => p.nodeId));
+  const written = new Set((data ?? []).map((r) => r.pr_node_id));
+
+  const idx = sameDay.findIndex((p) => p.nodeId === currentNodeId);
+  const pending = sameDay.filter((p) => !written.has(p.nodeId) && p.nodeId !== currentNodeId);
+  const next = sameDay.slice(idx + 1).find((p) => !written.has(p.nodeId)) ?? pending[0];
+
+  if (!next) {
+    return (
+      <Link href={backHref} className="btn">
+        완료
+      </Link>
+    );
+  }
+  return (
+    <Link href={`/pr/${next.owner}/${next.repo}/${next.number}`} className="btn">
+      다음 PR → <span style={{ opacity: 0.55, fontWeight: 500 }}>{pending.length}</span>
+    </Link>
+  );
+}
+
+function WriteSkeleton() {
+  return (
+    <div aria-busy="true" aria-label="불러오는 중">
+      <div className="skeleton" style={{ width: 160, height: 16, marginBottom: 14 }} />
+      <div className="skeleton" style={{ width: "60%", height: 34, marginBottom: 12 }} />
+      <div className="skeleton" style={{ width: 260, height: 20, marginBottom: 28 }} />
+      <div className="write-grid">
+        <div className="skeleton" style={{ height: 480, borderRadius: 16 }} />
+        <div className="skeleton" style={{ height: 560, borderRadius: 16 }} />
+      </div>
+    </div>
   );
 }

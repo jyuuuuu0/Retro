@@ -1,18 +1,11 @@
 import Link from "next/link";
-import { redirect } from "next/navigation";
+import { Suspense } from "react";
 import { ChevronIcon, CheckIcon } from "@/components/icons";
 import { Diff, StateBadge } from "@/components/StateBadge";
-import {
-  addDays,
-  formatDayShort,
-  formatYearMonth,
-  isValidDate,
-  kstStartIso,
-  kstToday,
-} from "@/lib/date";
-import { listMyPRs, type PRSummary } from "@/lib/github";
+import { addDays, formatDayShort, formatYearMonth, isValidDate, kstStartIso, kstToday } from "@/lib/date";
+import { listMyPRs } from "@/lib/github";
 import { countByDay, currentStreak } from "@/lib/retros";
-import { getSession, isAuthError } from "@/lib/session";
+import { getSession, handleGitHubError } from "@/lib/session";
 
 export default async function TodayPage(props: PageProps<"/">) {
   const sp = await props.searchParams;
@@ -20,59 +13,23 @@ export default async function TodayPage(props: PageProps<"/">) {
   const date = typeof sp.date === "string" && isValidDate(sp.date) && sp.date <= today ? sp.date : today;
   const pendingFirst = sp.sort === "pending";
 
-  const { supabase, user, profile, octokit } = await getSession();
-
-  let prs: PRSummary[] = [];
-  let loadError: string | null = null;
-  try {
-    prs = await listMyPRs(octokit, profile.github_login, date);
-  } catch (e) {
-    if (isAuthError(e)) redirect("/login?error=token");
-    loadError = "GitHub에서 PR을 불러오지 못했어요. 잠시 후 다시 시도해 주세요.";
-  }
-
-  const yearAgo = kstStartIso(addDays(today, -400));
-  const monthStart = kstStartIso(`${today.slice(0, 7)}-01`);
-  const [{ data: written }, { data: history }] = await Promise.all([
-    prs.length
-      ? supabase.from("retros").select("pr_node_id").eq("user_id", user.id).in("pr_node_id", prs.map((p) => p.nodeId))
-      : Promise.resolve({ data: [] as { pr_node_id: string }[] }),
-    supabase.from("retros").select("pr_created_at").eq("user_id", user.id).gte("pr_created_at", yearAgo),
-  ]);
-
-  const done = new Set((written ?? []).map((r) => r.pr_node_id));
-  const counts = countByDay(history ?? []);
-  const streak = currentStreak(counts, today);
-  const monthCount = (history ?? []).filter((r) => r.pr_created_at >= monthStart).length;
-
-  const doneCount = prs.filter((p) => done.has(p.nodeId)).length;
-  const ordered = pendingFirst
-    ? [...prs].sort((a, b) => Number(done.has(a.nodeId)) - Number(done.has(b.nodeId)))
-    : prs;
-
   const prev = addDays(date, -1);
   const next = addDays(date, 1);
-  const dateQs = (d: string) => (d === today ? "" : `?date=${d}`);
-  const sortHref = (pending: boolean) => {
-    const params = new URLSearchParams();
-    if (date !== today) params.set("date", date);
-    if (pending) params.set("sort", "pending");
-    const s = params.toString();
-    return s ? `/?${s}` : "/";
-  };
+  const dateHref = (d: string) => (d === today ? "/" : `/?date=${d}`);
 
+  // 날짜 헤더는 바로 바뀌고, 아래 내용만 스켈레톤 → 로드
   return (
     <>
       <div className="today-head">
         <div>
           <div className="eyebrow">{formatYearMonth(date)}</div>
           <div className="date-nav">
-            <Link href={`/${dateQs(prev)}`} className="icon-btn" aria-label="이전 날">
+            <Link href={dateHref(prev)} className="icon-btn" aria-label="이전 날">
               <ChevronIcon dir="left" />
             </Link>
             <h1 className="page-title">{formatDayShort(date)}</h1>
             {date < today ? (
-              <Link href={`/${dateQs(next)}`} className="icon-btn" aria-label="다음 날">
+              <Link href={dateHref(next)} className="icon-btn" aria-label="다음 날">
                 <ChevronIcon dir="right" />
               </Link>
             ) : (
@@ -89,9 +46,63 @@ export default async function TodayPage(props: PageProps<"/">) {
         )}
       </div>
 
+      <Suspense key={`${date}:${pendingFirst}`} fallback={<TodaySkeleton />}>
+        <TodayContent date={date} today={today} pendingFirst={pendingFirst} />
+      </Suspense>
+    </>
+  );
+}
+
+async function TodayContent({ date, today, pendingFirst }: { date: string; today: string; pendingFirst: boolean }) {
+  const { supabase, userId, profile, token } = await getSession();
+
+  const dayStart = kstStartIso(date);
+  const dayEnd = kstStartIso(addDays(date, 1));
+  const monthStart = kstStartIso(`${today.slice(0, 7)}-01`);
+
+  // GitHub와 DB 조회를 한꺼번에
+  const [prRes, { data: written }, { data: history }] = await Promise.all([
+    listMyPRs(token, profile.github_login, date, date === today),
+    supabase
+      .from("retros")
+      .select("pr_node_id")
+      .eq("user_id", userId)
+      .gte("pr_created_at", dayStart)
+      .lt("pr_created_at", dayEnd),
+    supabase
+      .from("retros")
+      .select("pr_created_at")
+      .eq("user_id", userId)
+      .gte("pr_created_at", kstStartIso(addDays(today, -400))),
+  ]);
+
+  if (!prRes.ok) handleGitHubError(prRes.status);
+  const prs = prRes.ok ? prRes.data : [];
+
+  const done = new Set((written ?? []).map((r) => r.pr_node_id));
+  const counts = countByDay(history ?? []);
+  const streak = currentStreak(counts, today);
+  const monthCount = (history ?? []).filter((r) => r.pr_created_at >= monthStart).length;
+
+  const doneCount = prs.filter((p) => done.has(p.nodeId)).length;
+  const ordered = pendingFirst
+    ? [...prs].sort((a, b) => Number(done.has(a.nodeId)) - Number(done.has(b.nodeId)))
+    : prs;
+
+  const label = date === today ? "오늘" : "이날";
+  const sortHref = (pending: boolean) => {
+    const params = new URLSearchParams();
+    if (date !== today) params.set("date", date);
+    if (pending) params.set("sort", "pending");
+    const s = params.toString();
+    return s ? `/?${s}` : "/";
+  };
+
+  return (
+    <>
       <div className="stats">
         <div className="card stat">
-          <div className="stat-k">{date === today ? "오늘" : "이날"} 회고 진행률</div>
+          <div className="stat-k">{label} 회고 진행률</div>
           <div className="stat-v">
             {doneCount} <small>/ {prs.length}</small>
           </div>
@@ -111,7 +122,7 @@ export default async function TodayPage(props: PageProps<"/">) {
 
       <div className="sec">
         <h2>
-          {date === today ? "오늘" : "이날"} 올린 PR <span>{prs.length}</span>
+          {label} 올린 PR <span>{prs.length}</span>
         </h2>
         {prs.length > 1 && (
           <Link href={sortHref(!pendingFirst)} className="sec-link" aria-current={pendingFirst}>
@@ -120,23 +131,26 @@ export default async function TodayPage(props: PageProps<"/">) {
         )}
       </div>
 
-      {loadError ? (
+      {!prRes.ok ? (
         <div className="card empty">
           <strong>불러오기 실패</strong>
-          {loadError}
+          GitHub에서 PR을 불러오지 못했어요. 잠시 후 다시 시도해 주세요.
         </div>
       ) : prs.length === 0 ? (
         <div className="card empty">
-          <strong>{date === today ? "오늘 올린 PR이 없어요" : "이날 올린 PR이 없어요"}</strong>
+          <strong>{label} 올린 PR이 없어요</strong>
           PR을 올리면 여기에 자동으로 나타나요.
         </div>
       ) : (
         <div className="pr-list">
           {ordered.map((pr) => {
             const isDone = done.has(pr.nodeId);
-            const href = `/pr/${pr.owner}/${pr.repo}/${pr.number}${dateQs(date)}`;
             return (
-              <Link key={pr.nodeId} href={href} className={`card pr${isDone ? " done" : ""}`}>
+              <Link
+                key={pr.nodeId}
+                href={`/pr/${pr.owner}/${pr.repo}/${pr.number}`}
+                className={`card pr${isDone ? " done" : ""}`}
+              >
                 <div className="pr-main">
                   <div className="pr-repo mono">
                     {pr.repoFullName} · #{pr.number}
@@ -166,5 +180,23 @@ export default async function TodayPage(props: PageProps<"/">) {
         </div>
       )}
     </>
+  );
+}
+
+function TodaySkeleton() {
+  return (
+    <div aria-busy="true" aria-label="불러오는 중">
+      <div className="stats">
+        <div className="skeleton" style={{ height: 112, borderRadius: 16 }} />
+        <div className="skeleton" style={{ height: 112, borderRadius: 16 }} />
+        <div className="skeleton" style={{ height: 112, borderRadius: 16 }} />
+      </div>
+      <div className="skeleton" style={{ width: 140, height: 22, marginBottom: 14 }} />
+      <div className="pr-list">
+        <div className="skeleton" style={{ height: 104, borderRadius: 16 }} />
+        <div className="skeleton" style={{ height: 104, borderRadius: 16 }} />
+        <div className="skeleton" style={{ height: 104, borderRadius: 16 }} />
+      </div>
+    </div>
   );
 }

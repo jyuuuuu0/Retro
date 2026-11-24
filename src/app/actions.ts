@@ -35,10 +35,9 @@ function clean(s: string) {
 
 export async function saveRetro(input: RetroInput): Promise<SaveResult> {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return { ok: false, error: "로그인이 필요해요" };
+  const { data: auth } = await supabase.auth.getClaims();
+  const userId = auth?.claims?.sub;
+  if (!userId) return { ok: false, error: "로그인이 필요해요" };
 
   const rating = input.rating && input.rating >= 1 && input.rating <= 5 ? Math.round(input.rating) : null;
   const tags = [...new Set(input.tags.map((t) => t.trim().slice(0, 40)).filter(Boolean))].slice(0, 20);
@@ -48,7 +47,7 @@ export async function saveRetro(input: RetroInput): Promise<SaveResult> {
     const { error } = await supabase
       .from("retros")
       .delete()
-      .eq("user_id", user.id)
+      .eq("user_id", userId)
       .eq("pr_node_id", input.pr.nodeId);
     if (error) return { ok: false, error: "저장에 실패했어요" };
     return { ok: true, savedAt: new Date().toISOString() };
@@ -58,7 +57,7 @@ export async function saveRetro(input: RetroInput): Promise<SaveResult> {
     .from("retros")
     .upsert(
       {
-        user_id: user.id,
+        user_id: userId,
         pr_node_id: input.pr.nodeId,
         repo_full_name: input.pr.repoFullName,
         pr_number: input.pr.number,
